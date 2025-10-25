@@ -1,0 +1,15 @@
+# Database files
+*.MDB
+*.mdb
+*.sqlite3
+
+# Python virtual environment
+venv/
+
+# Temporary binary/image files
+raw_photo_output.bin
+cleaned_photo.bmp
+
+# Python cache
+__pycache__/
+*.pyc
