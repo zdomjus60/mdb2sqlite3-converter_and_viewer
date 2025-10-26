@@ -4,19 +4,26 @@ import sqlite3
 import subprocess
 import io
 import csv
+import sys
+import os
 from PIL import Image, ImageTk
 
-# --- Configuration ---
-SQLITE_DB_PATH = 'northwind.sqlite3'
-MDB_PATH = 'Northwind.MDB'
 # Common names for columns that might contain images
 IMAGE_COLUMN_CANDIDATES = ['Photo', 'Picture']
 
 class MdbImageViewer(tk.Tk):
-    def __init__(self):
+    def __init__(self, sqlite_path, mdb_path):
         super().__init__()
 
-        self.title("MDB/SQLite Data Viewer")
+        if not os.path.exists(sqlite_path):
+            raise FileNotFoundError(f"SQLite file not found: {sqlite_path}")
+        if not os.path.exists(mdb_path):
+            raise FileNotFoundError(f"MDB file not found: {mdb_path}")
+
+        self.sqlite_path = sqlite_path
+        self.mdb_path = mdb_path
+
+        self.title(f"Viewer - {os.path.basename(sqlite_path)}")
         self.geometry("800x600")
 
         # Data storage
@@ -68,7 +75,7 @@ class MdbImageViewer(tk.Tk):
     def load_table_names(self):
         """Connects to the SQLite DB just to get the list of tables."""
         try:
-            with sqlite3.connect(SQLITE_DB_PATH) as conn:
+            with sqlite3.connect(self.sqlite_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
                 tables = [row[0] for row in cursor.fetchall()]
@@ -86,8 +93,7 @@ class MdbImageViewer(tk.Tk):
 
         print(f"Loading data for '{table_name}' from MDB...")
         try:
-            # Use -b hex to safely export binary data as a hex string
-            command = ['mdb-export', '-b', 'hex', '-D', '%Y-%m-%d %H:%M:%S', MDB_PATH, table_name]
+            command = ['mdb-export', '-b', 'hex', '-D', '%Y-%m-%d %H:%M:%S', self.mdb_path, table_name]
             csv_output = subprocess.check_output(command).decode('utf-8')
             
             reader = csv.reader(csv_output.splitlines())
@@ -110,7 +116,6 @@ class MdbImageViewer(tk.Tk):
         table_data = self.load_data_from_mdb(self.current_table)
         self.image_col = ""
         if table_data:
-            # Find the image column from the header of the loaded data
             header = table_data[0].keys()
             for col_name in header:
                 if col_name in IMAGE_COLUMN_CANDIDATES:
@@ -150,10 +155,8 @@ class MdbImageViewer(tk.Tk):
 
         if hex_image_string:
             try:
-                # Convert hex string back to binary
                 binary_data = bytes.fromhex(hex_image_string)
                 
-                # Heuristic to strip OLE header: find the 'BM' for BMP files
                 bmp_start = binary_data.find(b'BM')
                 if bmp_start != -1:
                     binary_data = binary_data[bmp_start:]
@@ -214,6 +217,13 @@ class MdbImageViewer(tk.Tk):
         self.destroy()
 
 if __name__ == "__main__":
-    app = MdbImageViewer()
+    if len(sys.argv) != 3:
+        print("Usage: python3 viewer.py <path_to_sqlite_file> <path_to_mdb_file>")
+        sys.exit(1)
+
+    sqlite_path = sys.argv[1]
+    mdb_path = sys.argv[2]
+    
+    app = MdbImageViewer(sqlite_path, mdb_path)
     app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()

@@ -2,6 +2,8 @@
 *.MDB
 *.mdb
 *.sqlite3
+*.sqlite
+*.db
 
 # Python virtual environment
 venv/
@@ -13,3 +15,7 @@ cleaned_photo.bmp
 # Python cache
 __pycache__/
 *.pyc
+
+# External libraries
+UCanAccess-5.0.1.bin/
+UCanAccess-5.0.1.bin.zip
