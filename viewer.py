@@ -11,6 +11,20 @@ from PIL import Image, ImageTk
 # Common names for columns that might contain images
 IMAGE_COLUMN_CANDIDATES = ['Photo', 'Picture']
 
+# --- Helper function to find the correct case for a table name in an MDB file ---
+def get_original_table_name(mdb_path, table_name_to_find):
+    """Uses mdb-tables to find the exact, case-sensitive name of a table."""
+    try:
+        command = ['mdb-tables', '-1', mdb_path]
+        tables_raw = subprocess.check_output(command).decode('utf-8')
+        all_mdb_tables = [t for t in tables_raw.split('\n') if t]
+        for mdb_table in all_mdb_tables:
+            if mdb_table.lower() == table_name_to_find.lower():
+                return mdb_table # Return the name with the correct case
+    except Exception as e:
+        print(f"Could not get original table names from MDB: {e}")
+    return table_name_to_find # Fallback to the name we were given
+
 class MdbImageViewer(tk.Tk):
     def __init__(self, sqlite_path, mdb_path):
         super().__init__()
@@ -27,7 +41,7 @@ class MdbImageViewer(tk.Tk):
         self.geometry("800x600")
 
         # Data storage
-        self.table_data_cache = {} # Cache for table data
+        self.table_data_cache = {}
         self.current_record_index = -1
         self.current_table = ""
         self.image_col = ""
@@ -73,12 +87,12 @@ class MdbImageViewer(tk.Tk):
         self.load_table_names()
 
     def load_table_names(self):
-        """Connects to the SQLite DB just to get the list of tables."""
+        """Connects to the SQLite DB to get the list of tables."""
         try:
             with sqlite3.connect(self.sqlite_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
-                tables = [row[0] for row in cursor.fetchall()]
+                tables = [row[0] for row in cursor.fetchall() if not row[0].startswith('sqlite_')]
                 self.table_selector['values'] = tables
                 if tables:
                     self.table_selector.current(0)
@@ -86,25 +100,28 @@ class MdbImageViewer(tk.Tk):
         except sqlite3.Error as e:
             self.show_error(f"Database Error: {e}")
 
-    def load_data_from_mdb(self, table_name):
+    def load_data_from_mdb(self, table_name_from_sqlite):
         """Loads data for a table directly from MDB using mdb-export with hex encoding."""
-        if table_name in self.table_data_cache:
-            return self.table_data_cache[table_name]
+        if table_name_from_sqlite in self.table_data_cache:
+            return self.table_data_cache[table_name_from_sqlite]
 
-        print(f"Loading data for '{table_name}' from MDB...")
+        # Find the correct, case-sensitive table name from the MDB file
+        correct_table_name = get_original_table_name(self.mdb_path, table_name_from_sqlite)
+        print(f"Loading data for '{correct_table_name}' (found from '{table_name_from_sqlite}') from MDB...")
+
         try:
-            command = ['mdb-export', '-b', 'hex', '-D', '%Y-%m-%d %H:%M:%S', self.mdb_path, table_name]
+            command = ['mdb-export', '-b', 'hex', '-D', '%Y-%m-%d %H:%M:%S', self.mdb_path, correct_table_name]
             csv_output = subprocess.check_output(command).decode('utf-8')
             
             reader = csv.reader(csv_output.splitlines())
             header = next(reader)
             
             data = [dict(zip(header, row)) for row in reader]
-            self.table_data_cache[table_name] = data
+            self.table_data_cache[table_name_from_sqlite] = data # Cache using the name from SQLite
             print(f"Successfully loaded and cached {len(data)} records.")
             return data
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
-            self.show_error(f"Failed to load data from MDB for table {table_name}.\n\n{e}")
+            self.show_error(f"Failed to load data from MDB for table {correct_table_name}.\n\n{e}")
             return []
 
     def on_table_select(self, event=None):
@@ -117,9 +134,13 @@ class MdbImageViewer(tk.Tk):
         self.image_col = ""
         if table_data:
             header = table_data[0].keys()
+            # Case-insensitive search for image column
             for col_name in header:
-                if col_name in IMAGE_COLUMN_CANDIDATES:
-                    self.image_col = col_name
+                for candidate in IMAGE_COLUMN_CANDIDATES:
+                    if col_name.lower() == candidate.lower():
+                        self.image_col = col_name
+                        break
+                if self.image_col:
                     break
             
             self.current_record_index = 0
@@ -131,7 +152,6 @@ class MdbImageViewer(tk.Tk):
         self.update_nav_state()
 
     def display_record(self):
-        """Displays the current record's text and image data from the cache."""
         table_data = self.table_data_cache.get(self.current_table, [])
         if not table_data or self.current_record_index < 0:
             return
@@ -157,9 +177,17 @@ class MdbImageViewer(tk.Tk):
             try:
                 binary_data = bytes.fromhex(hex_image_string)
                 
-                bmp_start = binary_data.find(b'BM')
-                if bmp_start != -1:
-                    binary_data = binary_data[bmp_start:]
+                # The OLE header from Access wraps the image data.
+                # We look for a common image format header (e.g., BMP, PNG, JFIF for JPEG).
+                img_headers = [b'BM', b'\x89PNG', b'\xff\xd8\xff\xe0']
+                img_start = -1
+                for header in img_headers:
+                    img_start = binary_data.find(header)
+                    if img_start != -1:
+                        break
+                
+                if img_start != -1:
+                    binary_data = binary_data[img_start:]
 
                 img = Image.open(io.BytesIO(binary_data))
                 img.thumbnail((300, 300))
@@ -167,7 +195,7 @@ class MdbImageViewer(tk.Tk):
                 
                 self.image_label.config(image=photo)
                 self.image_label.image = photo
-            except (ValueError, TypeError, Exception) as e:
+            except Exception as e:
                 print(f"Error processing image data for record: {e}")
                 self.show_no_image_label()
         else:
